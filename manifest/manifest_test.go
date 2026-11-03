@@ -25,6 +25,8 @@ webhooks:
   - path: /hooks/github
     from: GitHub
     purpose: Rebuilds the public pages when their copy changes
+members:
+  - fellowship_coordinators
 `
 
 func TestParse(t *testing.T) {
@@ -36,7 +38,7 @@ func TestParse(t *testing.T) {
 		t.Fatalf("%+v", m)
 	}
 	page := m.ConnectionsPage()
-	for _, want := range []string{"title: Connections", "`api.anthropic.com`", "`/hooks/github`", "email-smtp"} {
+	for _, want := range []string{"title: Connections", "`api.anthropic.com`", "`/hooks/github`", "email-smtp", "`fellowship_coordinators`"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page lacks %q", want)
 		}
@@ -65,6 +67,7 @@ func TestRefusals(t *testing.T) {
 		"secret in text":  "name: a\ntitle: A\nsubdomain: a\ndata_class: none\noutbound:\n  - host: x.org\n    purpose: uses ANTHROPIC_API_KEY\n    data: d\n",
 		"missing purpose": "name: a\ntitle: A\nsubdomain: a\ndata_class: none\noutbound:\n  - host: x.org\n    data: d\n",
 		"bad name":        "name: My App\ntitle: A\nsubdomain: a\ndata_class: none\n",
+		"role as members": "name: a\ntitle: A\nsubdomain: a\ndata_class: none\nmembers: [admin]\n",
 	} {
 		if _, err := Parse([]byte(y)); err == nil {
 			t.Errorf("%s: accepted", name)

@@ -40,8 +40,8 @@ import (
 // The versions under test. Renovate keeps the image digests current; the
 // guard snippets come from the gateway's repository at the commit named here.
 const (
-	defaultGatewayImage = "ghcr.io/uppertoe/vps-scaffold-auth:latest@sha256:78e34e0ce136460960abacf1b13a5a2df96a3201b67ed3b856d5ce94674b8290"
-	defaultGatewayRef   = "b8a40d18efabfe6e3773de0aff7a8b74f37ee85b"
+	defaultGatewayImage = "ghcr.io/uppertoe/vps-scaffold-auth:latest@sha256:d2dd0bea3ad0bbae8243d30ea7fbb85a29aca669f690c9bbb9bad7e4a01d94a7"
+	defaultGatewayRef   = "e4390c3f9affd51f1c9a608ea17fb6409c9f6bf2"
 	defaultCaddyImage   = "caddy:2.11.7-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5"
 	domain              = "e2e.test"
 	project             = "kitgate"
@@ -192,13 +192,15 @@ func (p *person) admitted(l level) bool {
 // --- the stack --------------------------------------------------------------
 
 type tester struct {
-	dir      string
-	appHost  string
-	routes   []route
-	people   []*person
-	started  time.Time
-	checks   int
-	failures []string
+	service      string
+	memberGroups []string
+	dir          string
+	appHost      string
+	routes       []route
+	people       []*person
+	started      time.Time
+	checks       int
+	failures     []string
 }
 
 func (t *tester) failf(format string, a ...any) {
@@ -250,6 +252,7 @@ func dockerRun(args ...string) (string, error) {
 }
 
 var (
+	membersRe  = regexp.MustCompile(`(?m)^# scaffold-members: ([a-z0-9_ -]+?) --`)
 	siteRe     = regexp.MustCompile(`(?m)^([a-z0-9-]+)\.\{\$DOMAIN\} \{$`)
 	upstreamRe = regexp.MustCompile(`(?m)(?:reverse_proxy|import protected\S*)(?: "[^"]*")* ([a-z0-9-]+):(\d+)\b`)
 )
@@ -271,6 +274,10 @@ func (t *tester) run() error {
 	}
 	t.appHost = site[1] + "." + domain
 	service := up[1]
+	t.service = service
+	if mm := membersRe.FindStringSubmatch(snippet); mm != nil {
+		t.memberGroups = strings.Fields(mm[1])
+	}
 
 	// Who to test as, from what the routes use.
 	domains, groups := map[string]bool{}, map[string]bool{}
@@ -286,6 +293,9 @@ func (t *tester) run() error {
 			}
 		}
 		hasOpen = hasOpen || l.kind == "open"
+	}
+	for _, g := range t.memberGroups {
+		groups[g] = true
 	}
 	staffDomain := "example.org"
 	if len(domains) > 0 {
@@ -316,7 +326,7 @@ func (t *tester) run() error {
 	t.started = time.Now()
 
 	t.testAnonymous()
-	if len(groups) > 0 {
+	if len(groups) > 0 || len(t.memberGroups) > 0 {
 		// The gateway fills groups from their feeds a minute after it starts,
 		// and a person's groups are read when they sign in.
 		if wait := 70*time.Second - time.Since(t.started); wait > 0 {
@@ -327,7 +337,33 @@ func (t *tester) run() error {
 	for _, p := range t.people[1:] {
 		t.testPerson(p)
 	}
+	t.testMembers()
 	return nil
+}
+
+// testMembers reads each group the app declares through the app's own
+// -members flag, inside its container, as the app itself would: through the
+// gateway's members endpoint with the app's token. A group the app has not
+// declared must be refused.
+func (t *tester) testMembers() {
+	if len(t.memberGroups) == 0 {
+		return
+	}
+	fmt.Println("kitgate: reading group members through the gateway's members endpoint")
+	read := func(group string) (string, error) {
+		cmd := exec.Command("docker", "compose", "-p", project, "-f", filepath.Join(t.dir, "compose.yml"),
+			"exec", "-T", t.service, "/app", "-members", group)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	for _, g := range t.memberGroups {
+		out, err := read(g)
+		t.check(err == nil && strings.Contains(out, "member@example.net"),
+			"reading the members of %s from inside the app: %v\n%s", g, err, out)
+	}
+	out, err := read("kitgate_undeclared")
+	t.check(err != nil && strings.Contains(out, "may not read"),
+		"reading a group the app has not declared must be refused, got: %v\n%s", err, out)
 }
 
 func sorted(m map[string]bool) []string {
@@ -365,6 +401,15 @@ func (t *tester) writeStack(snippet, service string, allowed, groups []string, h
 	openHosts := ""
 	if hasOpen {
 		openHosts = t.appHost
+	}
+	// The app's token for the gateway's members endpoint, when it reads any.
+	var readers, appMembers string
+	if len(t.memberGroups) > 0 {
+		readerToken := randHex(32)
+		envName := strings.ToUpper(strings.NewReplacer("-", "_").Replace(service))
+		readers = fmt.Sprintf("      - MEMBER_READERS=%s=%s\n      - MEMBER_READER_TOKEN_%s=%s\n",
+			service, strings.Join(t.memberGroups, ","), envName, readerToken)
+		appMembers = "      - GATEWAY_MEMBERS_URL=http://auth:8081\n      - GATEWAY_MEMBERS_TOKEN=" + readerToken + "\n"
 	}
 	files := map[string]string{
 		"auth.caddy": authCaddy,
@@ -412,7 +457,7 @@ func (t *tester) writeStack(snippet, service string, allowed, groups []string, h
       - OTP_LENGTH=8
       - RATELIMIT_PER_IP=200/15m
       - GROUP_FEEDS=%[10]s
-%[11]s    healthcheck:
+%[11]s%[14]s    healthcheck:
       test: ["CMD", "/app", "-healthcheck"]
       interval: 2s
       timeout: 2s
@@ -432,7 +477,7 @@ func (t *tester) writeStack(snippet, service string, allowed, groups []string, h
       - app_data:/data
     environment:
       - PUBLIC_URL=https://%[13]s
-    healthcheck:
+%[15]s    healthcheck:
       test: ["CMD", "/app", "-healthcheck"]
       interval: 2s
       timeout: 2s
@@ -441,7 +486,8 @@ volumes:
   auth_data:
   app_data:
 `, *caddyImage, domain, *port, service, *gatewayImage, strings.Join(allowed, ","), openHosts,
-			randHex(32), randHex(32), strings.TrimSpace(feeds.String()), feedEnv.String(), *image, t.appHost),
+			randHex(32), randHex(32), strings.TrimSpace(feeds.String()), feedEnv.String(), *image, t.appHost,
+			readers, appMembers),
 	}
 	if len(groups) == 0 {
 		files["compose.yml"] = strings.Replace(files["compose.yml"], "      - GROUP_FEEDS=\n", "", 1)
