@@ -98,6 +98,16 @@ jobs:
       - name: Logs
         if: always()
         run: docker logs app-ci 2>&1 | tail -50 || true
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # Signs in for real through the production Caddy and the published
+      # gateway, as several kinds of person, and checks that every route admits
+      # exactly the people its access level names.
+      - name: Access rules through the real gateway (kitgate)
+        run: |
+          kit="$(go list -m -f '{{.Version}}' github.com/uppertoe/vps-app-kit)"
+          go run "github.com/uppertoe/vps-app-kit/cmd/kitgate@${kit}" -image app:ci
 
   publish:
     needs: [checks, container]
@@ -120,13 +130,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # The tag is the full commit SHA, never "latest": the server repo pins
-      # the digest, and the tag ties that digest back to this commit.
+      # Two tags. "main" moves with every build: the server repo pins
+      # :main@sha256:..., and Renovate proposes each new digest, as it does
+      # for every first-party app. "sha-<commit>" never moves, and ties each
+      # digest back to the commit it was built from.
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.name.outputs.image }}
-          tags: type=sha,format=long
+          tags: |
+            type=raw,value=main
+            type=sha,format=long
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:

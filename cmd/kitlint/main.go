@@ -109,6 +109,10 @@ func lint(root string) ([]finding, error) {
 		}
 		rel, _ := filepath.Rel(root, path)
 		switch {
+		case strings.HasSuffix(path, "_test.go"):
+			// Tests run in CI, never in the container, and need their own
+			// HTTP clients and commands to drive the app from outside.
+			return nil
 		case strings.HasSuffix(path, ".go"):
 			fs, err := lintGo(path, rel)
 			if err != nil {
