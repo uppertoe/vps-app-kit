@@ -1,6 +1,7 @@
 package secure
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,5 +80,36 @@ func TestHeadersAndNonce(t *testing.T) {
 	h.ServeHTTP(w2, httptest.NewRequest("GET", "/", nil))
 	if w2.Header().Get("Content-Security-Policy") == csp {
 		t.Fatal("the nonce must be fresh on every response")
+	}
+}
+
+func TestLimitBody(t *testing.T) {
+	read := 0
+	h := LimitBody(10, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		read++
+		if err != nil {
+			http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.Write(b)
+	}))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/", strings.NewReader(strings.Repeat("x", 11))))
+	if w.Code != http.StatusRequestEntityTooLarge || read != 0 {
+		t.Fatalf("declared oversize: %d, handler ran %d times", w.Code, read)
+	}
+	// A body without a declared length is cut off at the cap.
+	r := httptest.NewRequest("POST", "/", io.NopCloser(strings.NewReader(strings.Repeat("x", 11))))
+	r.ContentLength = -1
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("undeclared oversize: %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/", strings.NewReader("ok")))
+	if w.Code != 200 || w.Body.String() != "ok" {
+		t.Fatalf("small body: %d %q", w.Code, w.Body.String())
 	}
 }

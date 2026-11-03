@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/uppertoe/vps-app-kit/access"
 	"github.com/uppertoe/vps-app-kit/gateway"
@@ -52,7 +53,9 @@ type Router struct {
 	opts   Options
 	routes []Route
 	levels map[string]access.Level // path -> level
-	sealed bool
+	// sealed is set by the first request; registering a route after that
+	// panics. Atomic, because requests are served concurrently.
+	sealed atomic.Bool
 }
 
 // New returns a Router with /healthz already registered as public.
@@ -93,7 +96,7 @@ func (rt *Router) HandleFunc(pattern string, level access.Level, h http.HandlerF
 // because Caddy matches on the path alone. It panics on a misuse, so the
 // mistake stops the app at start-up rather than at the first request.
 func (rt *Router) Handle(pattern string, level access.Level, h http.Handler) {
-	if rt.sealed {
+	if rt.sealed.Load() {
 		panic("router: Handle after ServeHTTP")
 	}
 	if !level.Valid() {
@@ -171,7 +174,9 @@ func (rt *Router) gate(level access.Level, h http.Handler) http.Handler {
 
 // ServeHTTP dispatches to the registered routes.
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	rt.sealed = true
+	if !rt.sealed.Load() {
+		rt.sealed.Store(true)
+	}
 	rt.mux.ServeHTTP(w, r)
 }
 

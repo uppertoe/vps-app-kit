@@ -47,3 +47,19 @@ func TestRendering(t *testing.T) {
 		}
 	}
 }
+
+func TestLineEndings(t *testing.T) {
+	m := Message{From: mail.Address{Address: "d@example.org"}, To: []mail.Address{{Address: "a@example.org"}}, Subject: "s",
+		Text: "one\r\ntwo\nthree\rfour"}
+	b, err := m.Bytes(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(b[strings.Index(string(b), "\r\n\r\n")+4:])
+	if body != "one\r\ntwo\r\nthree\r\nfour" {
+		t.Fatalf("body %q", body)
+	}
+	if strings.Contains(string(b), "\r\r") {
+		t.Fatal("CR CR in the message")
+	}
+}
