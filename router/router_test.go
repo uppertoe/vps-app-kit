@@ -1,15 +1,52 @@
 package router
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/uppertoe/vps-app-kit/access"
 	"github.com/uppertoe/vps-app-kit/gateway"
+	"github.com/uppertoe/vps-app-kit/webhook"
 )
+
+var hookKey = []byte("0123456789abcdef0123456789abcdef")
+
+// memReplay is an in-memory webhook.Replay for these tests.
+type memReplay struct{ done map[string]bool }
+
+func (m *memReplay) Claim(_ context.Context, id string, _ time.Duration) (webhook.Claim, error) {
+	if m.done[id] {
+		return webhook.Done, nil
+	}
+	return webhook.Claimed, nil
+}
+func (m *memReplay) Complete(_ context.Context, id string, _ time.Time) error {
+	if m.done == nil {
+		m.done = map[string]bool{}
+	}
+	m.done[id] = true
+	return nil
+}
+func (m *memReplay) Release(context.Context, string) error { return nil }
+
+var deliveries int
+
+// signGitHub signs an empty delivery as GitHub would, with a fresh ID.
+func signGitHub(r *http.Request) {
+	deliveries++
+	mac := hmac.New(sha256.New, hookKey)
+	r.Header.Set("X-GitHub-Delivery", fmt.Sprint("d", deliveries))
+	r.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+}
 
 const origin = "https://app.example.org"
 
@@ -26,7 +63,8 @@ func newTestRouter() *Router {
 	}
 	rt.HandleFunc("GET /{$}", access.Public("landing page"), echo)
 	rt.HandleFunc("POST /enquire", access.Public("enquiry form"), echo)
-	rt.HandleFunc("POST /hooks/github", access.Webhook("repository pushes"), echo)
+	rt.Handle("POST /hooks/github", access.Webhook("repository pushes"),
+		webhook.Handler(webhook.NewGitHub(hookKey), &memReplay{}, webhook.Options{}, func(w http.ResponseWriter, r *http.Request, _ []byte) { echo(w, r) }))
 	rt.HandleFunc("GET /home", access.SignedIn(), echo)
 	rt.HandleFunc("GET /apply", access.SignedInOrGuest(), echo)
 	rt.HandleFunc("GET /staff/", access.Domain("rch.org.au"), echo)
@@ -58,6 +96,9 @@ func do(rt http.Handler, method, path string, id ident, extra map[string]string)
 	}
 	for k, v := range extra {
 		r.Header.Set(k, v)
+	}
+	if strings.HasPrefix(path, "/hooks/") {
+		signGitHub(r)
 	}
 	w := httptest.NewRecorder()
 	rt.ServeHTTP(w, r)
@@ -270,4 +311,40 @@ func TestConcurrentRequests(t *testing.T) {
 		}
 	}()
 	rt.HandleFunc("GET /late", access.SignedIn(), func(http.ResponseWriter, *http.Request) {})
+}
+
+func TestWebhookRoutesMustVerify(t *testing.T) {
+	rt := New(Options{PublicOrigin: origin})
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a webhook route with an unverified handler must panic")
+		}
+	}()
+	rt.HandleFunc("POST /hooks/x", access.Webhook("x"), func(http.ResponseWriter, *http.Request) {})
+}
+
+func TestUnbuiltWebhookAnswers404(t *testing.T) {
+	rt := New(Options{PublicOrigin: origin})
+	var notBuilt *webhook.Endpoint
+	rt.Handle("POST /hooks/x", access.Webhook("x"), notBuilt)
+	r := httptest.NewRequest("POST", "/hooks/x", nil)
+	w := httptest.NewRecorder()
+	rt.ServeHTTP(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status %d", w.Code)
+	}
+}
+
+func TestPublicOriginMustBeExact(t *testing.T) {
+	for _, o := range []string{"https://app.example.org/app", "https://app.example.org/?x=1", "https://app.example.org/#f", "app.example.org"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%q accepted", o)
+				}
+			}()
+			New(Options{PublicOrigin: o})
+		}()
+	}
+	New(Options{PublicOrigin: "https://app.example.org/"})
 }

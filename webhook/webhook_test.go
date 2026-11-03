@@ -214,3 +214,33 @@ func TestClaimsAndLeases(t *testing.T) {
 		t.Fatal("Release must never forget a completed delivery")
 	}
 }
+
+type untilReplay struct{ until time.Time }
+
+func (u *untilReplay) Claim(context.Context, string, time.Duration) (Claim, error) {
+	return Claimed, nil
+}
+func (u *untilReplay) Complete(_ context.Context, _ string, until time.Time) error {
+	u.until = until
+	return nil
+}
+func (u *untilReplay) Release(context.Context, string) error { return nil }
+
+// GitHub signs no timestamp, so its deliveries are remembered for at least
+// 90 days however short the configured window.
+func TestGitHubRemembersLonger(t *testing.T) {
+	rp := &untilReplay{}
+	h := Handler(NewGitHub(key), rp, Options{RememberFor: time.Hour}, func(w http.ResponseWriter, r *http.Request, b []byte) {})
+	body := []byte("{}")
+	m := hmac.New(sha256.New, key)
+	m.Write(body)
+	r := httptest.NewRequest("POST", "/hooks/gh", bytes.NewReader(body))
+	r.Header.Set("X-GitHub-Delivery", "d1")
+	r.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(m.Sum(nil)))
+	if c := serve(h, r); c != 200 {
+		t.Fatalf("status %d", c)
+	}
+	if time.Until(rp.until) < 89*24*time.Hour {
+		t.Fatalf("remembered only until %v", rp.until)
+	}
+}

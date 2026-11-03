@@ -116,6 +116,10 @@ func NewGitHub(secrets ...[]byte) GitHub {
 
 func (GitHub) Name() string { return "github" }
 
+// MinRememberFor: GitHub signs no timestamp, so a captured delivery stays
+// valid for ever; its ID is remembered for 90 days.
+func (GitHub) MinRememberFor() time.Duration { return 90 * 24 * time.Hour }
+
 func (v GitHub) Verify(h http.Header, body []byte, _ time.Time) (string, error) {
 	id := h.Get("X-GitHub-Delivery")
 	sig, ok := strings.CutPrefix(h.Get("X-Hub-Signature-256"), "sha256=")
@@ -236,12 +240,17 @@ type Options struct {
 // When next changes the database, prefer to make the change idempotent, or
 // to record the delivery ID in the same transaction as the change, so that
 // a crash between the change and the completion does no harm on retry.
-func Handler(v Verifier, replay Replay, opts Options, next func(w http.ResponseWriter, r *http.Request, body []byte)) http.Handler {
+func Handler(v Verifier, replay Replay, opts Options, next func(w http.ResponseWriter, r *http.Request, body []byte)) *Endpoint {
 	if opts.MaxBody == 0 {
 		opts.MaxBody = 256 << 10
 	}
 	if opts.RememberFor == 0 {
 		opts.RememberFor = 72 * time.Hour
+	}
+	// A scheme that signs no timestamp (GitHub) relies on the delivery ID
+	// alone, so its deliveries are remembered for longer.
+	if m, ok := v.(interface{ MinRememberFor() time.Duration }); ok && opts.RememberFor < m.MinRememberFor() {
+		opts.RememberFor = m.MinRememberFor()
 	}
 	if opts.Lease == 0 {
 		opts.Lease = 5 * time.Minute
@@ -261,7 +270,7 @@ func Handler(v Verifier, replay Replay, opts Options, next func(w http.ResponseW
 		}
 		http.Error(w, "refused", http.StatusUnauthorized)
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return &Endpoint{h: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -312,8 +321,26 @@ func Handler(v Verifier, replay Replay, opts Options, next func(w http.ResponseW
 		}()
 		next(sw, r, body)
 		returned = true
-	})
+	})}
 }
+
+// Endpoint is a webhook handler that verifies every delivery. The router
+// registers a webhook route only with an Endpoint, so an unverified webhook
+// cannot be served by mistake. A nil *Endpoint (one not built, as while
+// make generate lists the routes) answers 404.
+type Endpoint struct{ h http.Handler }
+
+// ServeHTTP verifies and handles a delivery.
+func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if e == nil || e.h == nil {
+		http.NotFound(w, r)
+		return
+	}
+	e.h.ServeHTTP(w, r)
+}
+
+// VerifiesSignatures marks the handler for the router.
+func (*Endpoint) VerifiesSignatures() {}
 
 // statusRecorder notes the status next answered with.
 type statusRecorder struct {
