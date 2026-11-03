@@ -1,6 +1,7 @@
 package bad
 
 import (
+	"html/template"
 	"net"
 	h "net/http"
 	"os/exec"
@@ -14,4 +15,5 @@ func f() {
 	net.Dial("tcp", "x:1")
 	_ = &net.Dialer{}
 	exec.Command("sh")
+	_ = template.HTML("<b>x</b>")
 }

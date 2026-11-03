@@ -11,9 +11,12 @@
 // Templates must work under the kit's CSP and htmx settings: no inline event
 // handlers, no style attributes, no <style> blocks, no hx-on or x-html, and
 // no <script> without the nonce.
+//
+// "kitlint all" adds the checks on the rest of the repository; see all.go.
 package main
 
 import (
+	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -32,27 +35,60 @@ type finding struct {
 	msg  string
 }
 
+// Usage:
+//
+//	kitlint [dir]                    the code and template checks (as before)
+//	kitlint all [-base REF] [-upstream] [dir]
+//	                                 every check: code, compose, docs, vendor,
+//	                                 migrations, generated files, Dockerfile,
+//	                                 workflows and the manifest
 func main() {
-	root := "."
-	if len(os.Args) > 1 {
-		root = os.Args[1]
+	args := os.Args[1:]
+	var (
+		findings []finding
+		warnings []finding
+		err      error
+	)
+	if len(args) > 0 && args[0] == "all" {
+		fl := flag.NewFlagSet("all", flag.ExitOnError)
+		base := fl.String("base", "", "git ref the migrations are compared with, such as origin/main")
+		upstream := fl.Bool("upstream", false, "download each vendored file again and compare it with the registry")
+		_ = fl.Parse(args[1:])
+		root := "."
+		if fl.NArg() > 0 {
+			root = fl.Arg(0)
+		}
+		findings, warnings, err = lintAll(root, options{base: *base, upstream: *upstream})
+	} else {
+		root := "."
+		if len(args) > 0 {
+			root = args[0]
+		}
+		findings, err = lint(root)
 	}
-	fs, err := lint(root)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "kitlint:", err)
 		os.Exit(2)
 	}
+	report("warning", warnings)
+	report("error", findings)
+	if len(findings) > 0 {
+		fmt.Fprintf(os.Stderr, "kitlint: %d finding(s)\n", len(findings))
+		os.Exit(1)
+	}
+}
+
+func report(level string, fs []finding) {
 	for _, f := range fs {
-		fmt.Printf("%s: %s: %s\n", f.pos, f.rule, f.msg)
+		fmt.Printf("%s: %s: %s: %s\n", f.pos, level, f.rule, f.msg)
 		if os.Getenv("GITHUB_ACTIONS") == "true" {
 			file, line, _ := strings.Cut(f.pos, ":")
 			line, _, _ = strings.Cut(line, ":")
-			fmt.Printf("::error file=%s,line=%s,title=kitlint %s::%s\n", file, line, f.rule, f.msg)
+			if line == "" {
+				line = "1"
+			}
+			fmt.Printf("::%s file=%s,line=%s,title=kitlint %s::%s\n", level, file, line, f.rule, f.msg)
 		}
-	}
-	if len(fs) > 0 {
-		fmt.Fprintf(os.Stderr, "kitlint: %d finding(s)\n", len(fs))
-		os.Exit(1)
 	}
 }
 
@@ -92,6 +128,10 @@ func lint(root string) ([]finding, error) {
 }
 
 var bannedHTTPFuncs = map[string]bool{"Get": true, "Post": true, "Head": true, "PostForm": true}
+
+// escapeBypass are the html/template types that tell the template a value is
+// already safe, so it is inserted without escaping.
+var escapeBypass = map[string]bool{"HTML": true, "HTMLAttr": true, "JS": true, "JSStr": true, "CSS": true, "URL": true, "Srcset": true}
 
 func lintGo(path, rel string) ([]finding, error) {
 	fset := token.NewFileSet()
@@ -147,6 +187,8 @@ func lintGo(path, rel string) ([]finding, error) {
 				add(x, "egress", "http."+name+" bypasses the egress allowlist; use egress.New")
 			case p == "net" && strings.HasPrefix(name, "Dial"):
 				add(x, "egress", "net."+name+" opens a connection outside the egress client")
+			case p == "html/template" && escapeBypass[name]:
+				add(x, "escaping", "template."+name+" marks text as safe and skips escaping; pass the plain string to the template")
 			case p == "crypto/tls" && strings.HasPrefix(name, "Dial"):
 				add(x, "egress", "tls."+name+" opens a connection outside the egress client")
 			}
