@@ -27,7 +27,7 @@ func newTestClient(t *testing.T, h http.HandlerFunc) *MembersClient {
 func TestMembers(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/groups/coordinators/members" || r.Header.Get("Authorization") != "Bearer "+tok {
-			http.Error(w, `{"error":"x"}`, 401)
+			http.Error(w, `{"error":"x"}`, http.StatusUnauthorized)
 			return
 		}
 		w.Write([]byte(`{"group":"coordinators","members":["A@rch.org.au","b@rch.org.au"],"as_of":"2026-11-03T10:00:00Z"}`))
@@ -45,8 +45,8 @@ func TestMembersErrors(t *testing.T) {
 		reply func(http.ResponseWriter)
 		want  error
 	}{
-		{"refused group", func(w http.ResponseWriter) { w.WriteHeader(403) }, ErrMembersRefused},
-		{"bad token", func(w http.ResponseWriter) { w.WriteHeader(401) }, ErrMembersUnauthorized},
+		{"refused group", func(w http.ResponseWriter) { w.WriteHeader(http.StatusForbidden) }, ErrMembersRefused},
+		{"bad token", func(w http.ResponseWriter) { w.WriteHeader(http.StatusUnauthorized) }, ErrMembersUnauthorized},
 		{"wrong group in reply", func(w http.ResponseWriter) { w.Write([]byte(`{"group":"other","members":[]}`)) }, ErrMembersUnavailable},
 		{"null members", func(w http.ResponseWriter) { w.Write([]byte(`{"group":"g","members":null}`)) }, ErrMembersUnavailable},
 		{"not an address", func(w http.ResponseWriter) { w.Write([]byte(`{"group":"g","members":["Ann <a@x.org>"]}`)) }, ErrMembersUnavailable},
@@ -64,7 +64,7 @@ func TestMembersRetriesThenGivesUp(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls < 3 {
-			w.WriteHeader(429)
+			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
 		w.Write([]byte(`{"group":"g","members":[]}`))
@@ -73,7 +73,7 @@ func TestMembersRetriesThenGivesUp(t *testing.T) {
 	if err != nil || got == nil || len(got) != 0 || calls != 3 {
 		t.Fatalf("got %v %v after %d calls", got, err, calls)
 	}
-	always := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) })
+	always := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
 	if _, err := always.Members(context.Background(), "g"); !errors.Is(err, ErrMembersUnavailable) {
 		t.Fatalf("err = %v", err)
 	}
