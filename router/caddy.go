@@ -106,12 +106,34 @@ func (rt *Router) Caddy(site Site) (string, error) {
 		}
 		w(0, "# scaffold-members: "+strings.Join(site.MemberGroups, " ")+" -- reads these groups' members from the gateway")
 	}
+	// The server's route renderer requires every site to declare who may
+	// reach it: a site with a gate marks each open block with an open-path
+	// marker; a site with no gate at all carries one public marker.
+	gated := false
+	var reasons []string
+	for _, m := range matches {
+		if m.level.Anonymous() {
+			reasons = append(reasons, m.level.Reason())
+		} else {
+			gated = true
+		}
+	}
+	if !gated {
+		w(0, "# scaffold-lint: public -- "+strings.Join(reasons, "; "))
+	}
 	w(0, site.Host+" {")
 	for i, m := range matches {
 		name := fmt.Sprintf("@r%d", i+1)
 		w(1, "# "+commentSafe(strings.Join(m.from, ", "))+": "+m.level.String())
 		w(1, name+" path "+strings.Join(m.paths, " "))
 		w(1, "handle "+name+" {")
+		if gated && m.level.Anonymous() {
+			reason := m.level.Reason()
+			if m.level.IsWebhook() {
+				reason = "a signed webhook from " + reason
+			}
+			w(2, "# scaffold-lint: open-path -- "+strings.Join(m.paths, " ")+": "+reason)
+		}
 		for _, line := range m.level.CaddyLines(upstream, rt.opts.MaxWebhookBody) {
 			w(2, line)
 		}
@@ -119,6 +141,9 @@ func (rt *Router) Caddy(site Site) (string, error) {
 	}
 	w(1, "# Any path the app did not register.")
 	w(1, "handle {")
+	if gated {
+		w(2, "# scaffold-lint: open-path -- every other path: answered 404 by Caddy, nothing reaches the app")
+	}
 	w(2, "respond 404")
 	w(1, "}")
 	w(0, "}")
