@@ -715,6 +715,14 @@ func (t *tester) testAnonymous() {
 		if err == nil {
 			t.check(gatewayRefused(forged), "%s %s with forged identity headers: got %s, want the gateway to refuse", rt.method, path, describe(forged))
 		}
+		// Other methods on the same path are refused by the gateway too:
+		// Caddy guards a path whatever the method.
+		for _, m := range []string{"HEAD", "POST", "DELETE"} {
+			r, err := anon.b.do(m, "https://"+t.appHost+path, "", nil, map[string]string{"Origin": "https://" + t.appHost})
+			if err == nil {
+				t.check(gatewayRefused(r), "%s %s (gated) as anonymous: got %s, want the gateway to refuse", m, path, describe(r))
+			}
+		}
 		// Spellings of the same path must not slip past the gate.
 		for _, v := range variants(path) {
 			r, err := anon.b.do("GET", "https://"+t.appHost+v.path, v.raw, nil, nil)
@@ -744,13 +752,19 @@ func variants(p string) []variant {
 		return nil
 	}
 	first := p[1:2]
-	return []variant{
+	vs := []variant{
 		{path: strings.ToUpper(p)},
 		{path: "/" + p},
 		{path: "/." + p},
 		{path: "/x/.." + p},
+		{path: p + "/"},
 		{path: p, raw: "/%" + strings.ToUpper(hex.EncodeToString([]byte(first))) + p[2:]},
 	}
+	// An encoded slash inside a path that has more than one segment.
+	if i := strings.Index(p[1:], "/"); i > 0 {
+		vs = append(vs, variant{path: p, raw: p[:i+1] + "%2F" + p[i+2:]})
+	}
+	return vs
 }
 
 func (t *tester) testPerson(p *person) {

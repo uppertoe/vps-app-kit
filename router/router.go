@@ -60,8 +60,8 @@ type Router struct {
 
 // New returns a Router with /healthz already registered as public.
 func New(opts Options) *Router {
-	if secure.CanonicalOrigin(opts.PublicOrigin) == "" {
-		panic("router: Options.PublicOrigin must be an absolute origin such as https://app.example.org")
+	if !secure.ExactOrigin(opts.PublicOrigin) {
+		panic("router: Options.PublicOrigin must be an origin alone, such as https://app.example.org, with no path, query or credentials")
 	}
 	if opts.MaxBody == 0 {
 		opts.MaxBody = 64 << 10
@@ -101,6 +101,9 @@ func (rt *Router) Handle(pattern string, level access.Level, h http.Handler) {
 	}
 	if !level.Valid() {
 		panic("router: " + pattern + " has no access level")
+	}
+	if _, verified := h.(interface{ VerifiesSignatures() }); level.IsWebhook() && !verified {
+		panic("router: " + pattern + " is a webhook route, so its handler must come from webhook.Handler, which verifies every delivery")
 	}
 	method, path := splitPattern(pattern)
 	if prev, ok := rt.levels[path]; ok && !prev.Equal(level) {

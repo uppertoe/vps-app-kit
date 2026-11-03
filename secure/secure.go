@@ -140,5 +140,15 @@ func canonicalOrigin(s string) string {
 	return u.Scheme + "://" + host
 }
 
+// ExactOrigin reports whether s is an origin alone: scheme, host and an
+// optional port, with nothing but an optional trailing slash after it.
+func ExactOrigin(s string) bool {
+	u, err := url.Parse(strings.TrimSpace(s))
+	if err != nil || canonicalOrigin(s) == "" {
+		return false
+	}
+	return (u.Path == "" || u.Path == "/") && u.RawQuery == "" && u.Fragment == "" && !u.ForceQuery && u.Opaque == ""
+}
+
 // CanonicalOrigin is canonicalOrigin for callers outside the package.
 func CanonicalOrigin(s string) string { return canonicalOrigin(s) }
