@@ -63,9 +63,17 @@ func NoStore(next http.Handler) http.Handler {
 	})
 }
 
-// LimitBody caps the request body before anything reads it.
+// LimitBody caps the request body before anything reads it. A request that
+// declares a larger body is refused with 413 at once, so a handler never sees
+// it; one that sends more than it declared, or declares nothing, fails when
+// the handler reads past the cap.
 func LimitBody(max int64, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > max {
+			w.Header().Set("Connection", "close")
+			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		if r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, max)
 		}

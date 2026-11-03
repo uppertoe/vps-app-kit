@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/uppertoe/vps-app-kit/access"
@@ -249,4 +250,24 @@ func TestCaddyMembersMarker(t *testing.T) {
 	if strings.Contains(plain, "scaffold-members") {
 		t.Fatal("a marker without member groups")
 	}
+}
+
+// Requests are served concurrently; run with -race.
+func TestConcurrentRequests(t *testing.T) {
+	rt := newTestRouter()
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			do(rt, "GET", "/home", user, nil)
+		}()
+	}
+	wg.Wait()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("registering after serving must panic")
+		}
+	}()
+	rt.HandleFunc("GET /late", access.SignedIn(), func(http.ResponseWriter, *http.Request) {})
 }

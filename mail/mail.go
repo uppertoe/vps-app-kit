@@ -97,7 +97,10 @@ func (m Message) Bytes(now time.Time) ([]byte, error) {
 	h("Content-Transfer-Encoding", "quoted-printable")
 	b.WriteString("\r\n")
 	qp := quotedprintable.NewWriter(&b)
-	if _, err := qp.Write([]byte(strings.ReplaceAll(m.Text, "\n", "\r\n"))); err != nil {
+	// Normalise every line ending (CRLF, bare CR, LF) to LF, then to CRLF,
+	// so text that already holds CRLF does not become CR CR LF.
+	text := strings.ReplaceAll(strings.ReplaceAll(m.Text, "\r\n", "\n"), "\r", "\n")
+	if _, err := qp.Write([]byte(strings.ReplaceAll(text, "\n", "\r\n"))); err != nil {
 		return nil, err
 	}
 	if err := qp.Close(); err != nil {

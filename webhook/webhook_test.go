@@ -131,3 +131,86 @@ func httpBody(s string) *readCloser { return &readCloser{strings.NewReader(s)} }
 type readCloser struct{ *strings.Reader }
 
 func (readCloser) Close() error { return nil }
+
+// A delivery whose handler fails stays retryable: the retry is processed.
+// Only a successful delivery is remembered.
+func TestFailedDeliveryIsRetried(t *testing.T) {
+	db, err := sqlitex.Open(filepath.Join(t.TempDir(), "w.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rp, err := NewSQLiteReplay(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, fail, explode := 0, true, false
+	h := Handler(NewStandardWebhooks(key), rp, Options{}, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		calls++
+		if explode {
+			panic("handler bug")
+		}
+		if fail {
+			http.Error(w, "database unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	now := time.Now()
+	body := []byte(`{}`)
+	if c := serve(h, standardRequest("msg_r", now, body, key)); c != 500 || calls != 1 {
+		t.Fatalf("first attempt: %d, calls %d", c, calls)
+	}
+	// A panic must not mark the delivery done either.
+	explode = true
+	func() {
+		defer func() { _ = recover() }()
+		serve(h, standardRequest("msg_r", now, body, key))
+	}()
+	explode, fail = false, false
+	if c := serve(h, standardRequest("msg_r", now, body, key)); c != 202 || calls != 3 {
+		t.Fatalf("retry after failures: %d, calls %d (the retry must be processed)", c, calls)
+	}
+	if c := serve(h, standardRequest("msg_r", now, body, key)); c != 200 || calls != 3 {
+		t.Fatalf("replay after success: %d, calls %d (must not be processed again)", c, calls)
+	}
+}
+
+// A delivery already being processed is answered 503, and an abandoned
+// claim (the process died) can be taken again once its lease runs out.
+func TestClaimsAndLeases(t *testing.T) {
+	db, err := sqlitex.Open(filepath.Join(t.TempDir(), "w.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	rp, err := NewSQLiteReplay(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, err := rp.Claim(ctx, "a", time.Minute); err != nil || c != Claimed {
+		t.Fatalf("first claim: %v %v", c, err)
+	}
+	if c, _ := rp.Claim(ctx, "a", time.Minute); c != Busy {
+		t.Fatalf("second claim while processing: %v", c)
+	}
+	if c, _ := rp.Claim(ctx, "b", -time.Second); c != Claimed {
+		t.Fatal("claim b")
+	}
+	if c, _ := rp.Claim(ctx, "b", time.Minute); c != Claimed {
+		t.Fatalf("an expired claim must be claimable again, got %v", c)
+	}
+	if err := rp.Complete(ctx, "a", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := rp.Claim(ctx, "a", time.Minute); c != Done {
+		t.Fatalf("a completed delivery: %v", c)
+	}
+	if err := rp.Release(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := rp.Claim(ctx, "a", time.Minute); c != Done {
+		t.Fatal("Release must never forget a completed delivery")
+	}
+}

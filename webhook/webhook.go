@@ -136,10 +136,32 @@ func (v GitHub) Verify(h http.Header, body []byte, _ time.Time) (string, error) 
 	return "", fmt.Errorf("%w: signature mismatch", ErrInvalid)
 }
 
-// Replay remembers delivery IDs. Remember reports false when id was already
-// seen and has not yet expired.
+// Claim is the outcome of claiming a delivery for processing.
+type Claim int
+
+const (
+	// Claimed: no one has processed this delivery; process it now.
+	Claimed Claim = iota
+	// Done: the delivery was processed successfully before; acknowledge it
+	// without processing it again.
+	Done
+	// Busy: another request is processing the same delivery right now; ask
+	// the sender to try again later.
+	Busy
+)
+
+// Replay tracks each delivery through its life. A delivery is marked done
+// only after the handler has succeeded, so a delivery whose processing
+// failed stays retryable, and the sender's retry is processed afresh.
 type Replay interface {
-	Remember(ctx context.Context, id string, until time.Time) (fresh bool, err error)
+	// Claim takes a delivery for processing, for at most lease. A claim
+	// whose lease has run out (the process died mid-way) can be taken again.
+	Claim(ctx context.Context, id string, lease time.Duration) (Claim, error)
+	// Complete marks a claimed delivery as done, remembered until until.
+	Complete(ctx context.Context, id string, until time.Time) error
+	// Release gives a claimed delivery back after a failure, so a retry is
+	// processed.
+	Release(ctx context.Context, id string) error
 }
 
 // SQLiteReplay keeps delivery IDs in the app's database.
@@ -147,41 +169,82 @@ type SQLiteReplay struct{ db *sql.DB }
 
 // NewSQLiteReplay creates its table if needed.
 func NewSQLiteReplay(ctx context.Context, db *sql.DB) (*SQLiteReplay, error) {
-	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS kit_webhook_seen (
-		id TEXT PRIMARY KEY, expires INTEGER NOT NULL)`)
+	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS kit_webhook_deliveries (
+		id TEXT PRIMARY KEY,
+		state TEXT NOT NULL CHECK (state IN ('processing', 'done')),
+		expires INTEGER NOT NULL)`)
+	if err == nil {
+		// The table of releases before v0.5.0, which recorded a delivery
+		// before processing it.
+		_, err = db.ExecContext(ctx, `DROP TABLE IF EXISTS kit_webhook_seen`)
+	}
 	return &SQLiteReplay{db: db}, err
 }
 
-func (s *SQLiteReplay) Remember(ctx context.Context, id string, until time.Time) (bool, error) {
-	now := time.Now().Unix()
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM kit_webhook_seen WHERE expires < ?`, now); err != nil {
-		return false, err
-	}
-	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO kit_webhook_seen(id, expires) VALUES (?, ?)`, id, until.Unix())
+func (s *SQLiteReplay) Claim(ctx context.Context, id string, lease time.Duration) (Claim, error) {
+	now := time.Now()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	n, err := res.RowsAffected()
-	return n == 1, err
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kit_webhook_deliveries WHERE expires < ?`, now.Unix()); err != nil {
+		return 0, err
+	}
+	var state string
+	err = tx.QueryRowContext(ctx, `SELECT state FROM kit_webhook_deliveries WHERE id = ?`, id).Scan(&state)
+	switch {
+	case err == nil && state == "done":
+		return Done, tx.Commit()
+	case err == nil:
+		return Busy, tx.Commit()
+	case !errors.Is(err, sql.ErrNoRows):
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO kit_webhook_deliveries(id, state, expires) VALUES (?, 'processing', ?)`,
+		id, now.Add(lease).Unix()); err != nil {
+		return 0, err
+	}
+	return Claimed, tx.Commit()
+}
+
+func (s *SQLiteReplay) Complete(ctx context.Context, id string, until time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE kit_webhook_deliveries SET state = 'done', expires = ? WHERE id = ?`, until.Unix(), id)
+	return err
+}
+
+func (s *SQLiteReplay) Release(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM kit_webhook_deliveries WHERE id = ? AND state = 'processing'`, id)
+	return err
 }
 
 // Options configure Handler.
 type Options struct {
 	MaxBody           int64         // default 256 KiB
-	RememberFor       time.Duration // default 72 hours
+	RememberFor       time.Duration // how long a done delivery is remembered; default 72 hours
+	Lease             time.Duration // how long a claim lasts if processing never finishes; default 5 minutes
 	FailuresPerMinute int           // refusals allowed per minute before 429; default 30
 	Log               *slog.Logger  // default slog.Default()
 }
 
-// Handler verifies each delivery, then calls next with the raw body. A
-// replay of an accepted delivery is answered 200 without calling next, so a
-// provider's retry is not processed twice.
+// Handler verifies each delivery, claims it, then calls next with the raw
+// body. The delivery is marked done only if next answers 2xx; any other
+// answer, or a panic, gives it back, so the sender's retry is processed. A
+// replay of a done delivery is answered 200 without calling next, and a
+// delivery already being processed is answered 503, so the sender retries.
+//
+// When next changes the database, prefer to make the change idempotent, or
+// to record the delivery ID in the same transaction as the change, so that
+// a crash between the change and the completion does no harm on retry.
 func Handler(v Verifier, replay Replay, opts Options, next func(w http.ResponseWriter, r *http.Request, body []byte)) http.Handler {
 	if opts.MaxBody == 0 {
 		opts.MaxBody = 256 << 10
 	}
 	if opts.RememberFor == 0 {
 		opts.RememberFor = 72 * time.Hour
+	}
+	if opts.Lease == 0 {
+		opts.Lease = 5 * time.Minute
 	}
 	if opts.FailuresPerMinute == 0 {
 		opts.FailuresPerMinute = 30
@@ -214,18 +277,69 @@ func Handler(v Verifier, replay Replay, opts Options, next func(w http.ResponseW
 			refuse(w, strings.TrimPrefix(err.Error(), "webhook: invalid delivery: "))
 			return
 		}
-		fresh, err := replay.Remember(r.Context(), v.Name()+":"+id, time.Now().Add(opts.RememberFor))
+		key := v.Name() + ":" + id
+		claim, err := replay.Claim(r.Context(), key, opts.Lease)
 		if err != nil {
 			opts.Log.Error("webhook replay store", "err", err)
 			http.Error(w, "try again", http.StatusServiceUnavailable)
 			return
 		}
-		if !fresh {
+		switch claim {
+		case Done:
 			w.WriteHeader(http.StatusOK)
 			return
+		case Busy:
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "already being processed", http.StatusServiceUnavailable)
+			return
 		}
-		next(w, r, body)
+		sw := &statusRecorder{ResponseWriter: w}
+		returned := false
+		// Release on any exit but success, including a panic in next. The
+		// store is updated with a fresh context: the request's may be done.
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if returned && sw.ok() {
+				if err := replay.Complete(ctx, key, time.Now().Add(opts.RememberFor)); err != nil {
+					opts.Log.Error("webhook replay store: complete", "err", err)
+				}
+				return
+			}
+			if err := replay.Release(ctx, key); err != nil {
+				opts.Log.Error("webhook replay store: release", "err", err)
+			}
+		}()
+		next(sw, r, body)
+		returned = true
 	})
+}
+
+// statusRecorder notes the status next answered with.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// ok reports a 2xx answer. A handler that wrote nothing has answered 200.
+func (s *statusRecorder) ok() bool {
+	return s.status == 0 || (s.status >= 200 && s.status < 300)
 }
 
 type limiter struct {
