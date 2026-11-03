@@ -51,6 +51,11 @@ type Manifest struct {
 	Email *Email `yaml:"email"`
 	// Webhooks lists every service that sends the app signed deliveries.
 	Webhooks []Webhook `yaml:"webhooks"`
+	// Members lists the gateway groups whose members the app reads when
+	// nobody is signed in, such as for a weekly email to a group. The
+	// server's route renderer gives the app a private network to the
+	// gateway's members endpoint only when this list is not empty.
+	Members []string `yaml:"members"`
 }
 
 // Outbound is one outside HTTPS service.
@@ -160,6 +165,17 @@ func (m *Manifest) validate() error {
 		text(fmt.Sprintf("webhooks[%d].from", i), w.From)
 		text(fmt.Sprintf("webhooks[%d].purpose", i), w.Purpose)
 	}
+	groupRe := regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	seenGroup := map[string]bool{}
+	for i, g := range m.Members {
+		if !groupRe.MatchString(g) || g == "admin" || g == "user" || g == "guest" {
+			bad("members[%d] %q must be a gateway group name, not a role", i, g)
+		}
+		if seenGroup[g] {
+			bad("members lists %s twice", g)
+		}
+		seenGroup[g] = true
+	}
 	return errors.Join(errs...)
 }
 
@@ -213,6 +229,11 @@ func (m *Manifest) ConnectionsPage() string {
 		}
 		w("")
 		w("Each delivery is admitted only with a valid signature from its sender.")
+	}
+	if len(m.Members) > 0 {
+		w("")
+		w("The app reads the members of these groups from the sign-in service, inside the server, when it needs them: " +
+			"`" + strings.Join(m.Members, "`, `") + "`. It keeps no copy of the members.")
 	}
 	w("")
 	w("## What leaves the server")

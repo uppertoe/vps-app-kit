@@ -236,3 +236,17 @@ func TestCaddyPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestCaddyMembersMarker(t *testing.T) {
+	out, err := newTestRouter().Caddy(Site{Name: "fellows", Host: "x.{$DOMAIN}", MemberGroups: []string{"coordinators", "leads"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "# scaffold-members: coordinators leads -- ") {
+		t.Fatalf("no marker:\n%s", out)
+	}
+	plain, _ := newTestRouter().Caddy(Site{Name: "fellows", Host: "x.{$DOMAIN}"})
+	if strings.Contains(plain, "scaffold-members") {
+		t.Fatal("a marker without member groups")
+	}
+}

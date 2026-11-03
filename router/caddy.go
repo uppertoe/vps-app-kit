@@ -18,6 +18,11 @@ type Site struct {
 	Host string
 	// Port is the port the container listens on. Default 8080.
 	Port int
+	// MemberGroups are the groups the app reads from the gateway's members
+	// endpoint (app.yaml's members). The snippet carries them as a
+	// "scaffold-members" marker, from which the server's route renderer
+	// creates the app's private network to the gateway.
+	MemberGroups []string
 }
 
 var siteNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
@@ -93,6 +98,14 @@ func (rt *Router) Caddy(site Site) (string, error) {
 	w(0, "# Generated from the app's route list by vps-app-kit. Do not edit:")
 	w(0, "# change the routes in the app, then run make generate.")
 	w(0, "# Keep comments free of braces: the server's route renderer counts them.")
+	if len(site.MemberGroups) > 0 {
+		for _, g := range site.MemberGroups {
+			if !regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`).MatchString(g) {
+				return "", fmt.Errorf("router: member group %q is not a group name", g)
+			}
+		}
+		w(0, "# scaffold-members: "+strings.Join(site.MemberGroups, " ")+" -- reads these groups' members from the gateway")
+	}
 	w(0, site.Host+" {")
 	for i, m := range matches {
 		name := fmt.Sprintf("@r%d", i+1)
