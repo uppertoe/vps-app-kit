@@ -129,6 +129,10 @@ func lint(root string) ([]finding, error) {
 
 var bannedHTTPFuncs = map[string]bool{"Get": true, "Post": true, "Head": true, "PostForm": true}
 
+// escapeBypass are the html/template types that tell the template a value is
+// already safe, so it is inserted without escaping.
+var escapeBypass = map[string]bool{"HTML": true, "HTMLAttr": true, "JS": true, "JSStr": true, "CSS": true, "URL": true, "Srcset": true}
+
 func lintGo(path, rel string) ([]finding, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
@@ -183,6 +187,8 @@ func lintGo(path, rel string) ([]finding, error) {
 				add(x, "egress", "http."+name+" bypasses the egress allowlist; use egress.New")
 			case p == "net" && strings.HasPrefix(name, "Dial"):
 				add(x, "egress", "net."+name+" opens a connection outside the egress client")
+			case p == "html/template" && escapeBypass[name]:
+				add(x, "escaping", "template."+name+" marks text as safe and skips escaping; pass the plain string to the template")
 			case p == "crypto/tls" && strings.HasPrefix(name, "Dial"):
 				add(x, "egress", "tls."+name+" opens a connection outside the egress client")
 			}
