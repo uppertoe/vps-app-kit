@@ -25,7 +25,8 @@ at its next update.
 | `webhook` | Verifies signed deliveries (Standard Webhooks and GitHub), refuses stale and replayed ones, and rate-limits refusals. |
 | `mail` | Sends plain-text email through SES over SMTP with STARTTLS, or prints it to the log in development. Refuses line breaks in any header. |
 | `manifest` | Reads and validates `app.yaml`, and generates the app's connections page for its design docs. |
-| `cmd/kitlint` | The checker the CI workflow runs on an app: no network clients outside the kit, and no markup that breaks the CSP. |
+| `cmd/kitlint` | The checker the CI workflow runs on an app: no network clients outside the kit, no markup that breaks the CSP, and (`kitlint all`) the rest of the repository. |
+| `cmd/kitgate` | Tests the app's access rules through the production Caddy and the published gateway, signing in for real as several kinds of person. |
 
 ## Access levels
 
@@ -66,14 +67,15 @@ repository. It runs the checks below.
 | Job | Checks | When |
 |---|---|---|
 | `checks` | Formatting, vet, the tests under the race detector, staticcheck, govulncheck, `kitlint all` and gitleaks | Every push and pull request |
-| `container` | Builds the image, confirms it holds no dev stand-in, runs it locked down, and probes every gated route with forged headers | Every push and pull request |
-| `publish` | Pushes the image tagged with the full commit SHA, with an SBOM and a signed build provenance attestation | Pushes to the default branch only |
+| `container` | Builds the image, confirms it holds no dev stand-in, runs it locked down, probes every gated route with forged headers, then runs `kitgate`: every route must admit exactly the people its level names, and refusals must come from the gateway itself | Every push and pull request |
+| `publish` | Pushes the image tagged `main` (which the server pins by digest, and Renovate moves) and `sha-<commit>`, with an SBOM and a signed build provenance attestation | Pushes to the default branch only |
 
 `kitlint all` covers the code and templates, the compose file's §5 block,
 `.env.example`, the design-docs contract, the vendored files (downloaded again
 and compared with the registry), migrations already on the base branch, the
-generated Caddy snippet and connections page, the Dockerfile and the
-workflows. A health app that has not recorded its safeguards gets a warning
+generated Caddy snippet and connections page, the Dockerfile, the
+workflows, and, for an app holding personal or health information, a privacy
+page in the design docs and a public `/privacy` route. A health app that has not recorded its safeguards gets a warning
 on every run, never a failure.
 
 ## Versions

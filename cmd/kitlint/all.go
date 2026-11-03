@@ -46,6 +46,7 @@ func lintAll(root string, opt options) (findings, warnings []finding, err error)
 	if opt.base != "" {
 		findings = append(findings, checkMigrations(root, opt.base)...)
 	}
+	findings = append(findings, checkPrivacy(root, m)...)
 	if m.HealthUnattested(root) {
 		warnings = append(warnings, finding{"app.yaml", "health",
 			"this app holds health information and " + m.HealthAttestation + " does not exist: it is a prototype and must not hold real patient data (see compliance/README.md)"})
@@ -461,6 +462,30 @@ func checkWorkflows(root string, _ *manifest.Manifest) []finding {
 				bad(u + " must be pinned to a full commit SHA")
 			}
 		}
+	}
+	return out
+}
+
+// --- privacy: an app holding personal information says what it does --------
+
+func checkPrivacy(root string, m *manifest.Manifest) []finding {
+	if m.DataClass == manifest.DataNone {
+		return nil
+	}
+	var out []finding
+	if _, err := os.Stat(filepath.Join(root, "design-docs", "privacy.md")); err != nil {
+		out = append(out, finding{"design-docs/privacy.md", "privacy",
+			"an app whose data_class is " + string(m.DataClass) + " needs a privacy page in its design docs: what it holds, who sees it, where it is kept and for how long"})
+	}
+	cmd := exec.Command("go", "run", "./cmd/server", "-routes")
+	cmd.Dir = root
+	routes, err := cmd.Output()
+	if err != nil {
+		return append(out, finding{"internal/web/server.go", "privacy", "could not list the routes"})
+	}
+	if !regexp.MustCompile(`(?m)^GET\s+/privacy\s+public\b`).Match(routes) {
+		out = append(out, finding{"internal/web/server.go", "privacy",
+			"an app whose data_class is " + string(m.DataClass) + " needs a public GET /privacy page for the people whose information it holds"})
 	}
 	return out
 }

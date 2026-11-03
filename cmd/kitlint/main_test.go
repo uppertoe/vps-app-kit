@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestBadFixturesAllFlagged(t *testing.T) {
 	fs, err := lint("testdata/bad")
@@ -26,5 +30,23 @@ func TestGoodFixturesClean(t *testing.T) {
 	}
 	if len(fs) != 0 {
 		t.Fatalf("false positives: %v", fs)
+	}
+}
+
+func TestTestFilesAreExempt(t *testing.T) {
+	dir := t.TempDir()
+	src := "package x\n\nimport \"net/http\"\n\nvar c = &http.Client{}\n"
+	if err := os.WriteFile(filepath.Join(dir, "x_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := lint(dir)
+	if err != nil || len(fs) != 0 {
+		t.Fatalf("a test file was flagged: %v %v", fs, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "x.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if fs, _ := lint(dir); len(fs) != 1 {
+		t.Fatalf("the same code outside a test was not flagged: %v", fs)
 	}
 }
