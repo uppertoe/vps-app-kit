@@ -150,7 +150,14 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true
           provenance: mode=max
+      # GitHub signs build provenance only for public repositories on most
+      # plans. A private repository's image still carries the OCI source and
+      # revision labels and the SBOM; it skips the signed record.
+      - name: No signed provenance for a private repository
+        if: github.event.repository.visibility != 'public'
+        run: echo "::notice title=Provenance::This repository is private, so GitHub does not sign build provenance for it. The image carries its source and revision labels and an SBOM."
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: github.event.repository.visibility == 'public'
         with:
           subject-name: ${{ steps.name.outputs.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
