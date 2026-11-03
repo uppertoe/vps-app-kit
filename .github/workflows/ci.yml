@@ -1,0 +1,37 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # The analysers must be built with the same Go as the kit (go.mod's
+      # toolchain line), or they cannot read its standard library.
+      GOTOOLCHAIN: go1.27.3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Formatting
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - name: Vet the dev build
+        run: go vet -tags dev ./...
+      - name: Tests (race detector)
+        run: go test -race -count=1 ./...
+      - name: Fuzz the identity parser briefly
+        run: go test -run '^$' -fuzz FuzzFromRequest -fuzztime 30s ./gateway/
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

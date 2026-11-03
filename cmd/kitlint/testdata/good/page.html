@@ -1,0 +1,6 @@
+<!doctype html>
+<link rel="stylesheet" href="{{asset "app.css"}}">
+<script src="{{asset "js/app.js"}}" defer></script>
+<script nonce="{{.Nonce}}">document.documentElement.dataset.theme = "light"</script>
+<div x-data="menu" class="menu" x-show="open" x-text="label"></div>
+<button hx-post="/notes" hx-target="#notes">Save</button>
