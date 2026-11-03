@@ -1,0 +1,143 @@
+# The CI every app made from vps-app-template runs. An app calls it from its
+# own .github/workflows/ci.yml, pinned to a full commit SHA of this repo:
+#
+#   jobs:
+#     ci:
+#       uses: uppertoe/vps-app-kit/.github/workflows/app-ci.yml@<sha>
+#       permissions:
+#         contents: read
+#         packages: write
+#         id-token: write
+#         attestations: write
+#
+# The caller grants the most any job needs; each job below narrows it. Only
+# the publish job, on a push to the default branch, can write packages.
+name: App CI
+
+on:
+  workflow_call:
+
+permissions: {}
+
+env:
+  STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.2
+  GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.9.0
+  GITLEAKS: zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the migration check compares with the base branch
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Use the toolchain go.mod names for every tool
+        run: echo "GOTOOLCHAIN=$(go env GOVERSION)" >> "$GITHUB_ENV"
+      - name: Formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; echo "Run gofmt -w ." >&2; exit 1; }
+      - run: go vet ./...
+      - name: Tests (race detector)
+        run: go test -race -count=1 ./...
+      - name: staticcheck
+        run: go run "$STATICCHECK" ./...
+      - name: govulncheck
+        run: go run "$GOVULNCHECK" ./...
+      - name: Platform checks (kitlint all)
+        env:
+          BASE: ${{ github.base_ref || github.event.repository.default_branch }}
+        run: |
+          kit="$(go list -m -f '{{.Version}}' github.com/uppertoe/vps-app-kit)"
+          go run "github.com/uppertoe/vps-app-kit/cmd/kitlint@${kit}" all -upstream -base "origin/${BASE}" .
+      - name: Secrets in the history (gitleaks)
+        run: docker run --rm -v "$PWD:/repo:ro" "$GITLEAKS" detect --source /repo --no-banner --redact
+
+  container:
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build -t app:ci .
+      - name: The image contains no dev sign-in stand-in
+        run: |
+          id="$(docker create app:ci)"
+          docker cp "$id:/app" ./app-binary
+          docker rm "$id" >/dev/null
+          if grep -q 'kit_dev_identity' ./app-binary; then
+            echo "The image was built with the dev tag." >&2; exit 1
+          fi
+      - name: Run it locked down and probe it
+        run: |
+          docker volume create app-ci-data >/dev/null
+          docker run -d --name app-ci --read-only --tmpfs /tmp --cap-drop ALL \
+            --security-opt no-new-privileges:true --memory 256m --pids-limit 128 \
+            -v app-ci-data:/data -e PUBLIC_URL=https://app.example.org \
+            -p 127.0.0.1:18080:8080 app:ci
+          for _ in $(seq 1 30); do docker exec app-ci /app -healthcheck && break; sleep 1; done
+          docker exec app-ci /app -healthcheck
+          user="$(docker inspect -f '{{.Config.User}}' app-ci)"
+          case "$user" in ""|0|root|0:*|root:*) echo "The image runs as root." >&2; exit 1 ;; esac
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          test "$(code http://127.0.0.1:18080/dev/identity)" = 404
+          # A request carrying forged identity headers is treated as anonymous
+          # on a public route and refused on every gated one.
+          for path in $(docker exec app-ci /app -routes | awk '$3 != "public" && $1 == "GET" && $2 !~ /[{]/ {print $2}'); do
+            got="$(code -H 'Remote-Email: x@example.org' -H 'Remote-Email: y@example.org' -H 'Remote-Groups: admin' "http://127.0.0.1:18080$path")"
+            test "$got" = 401 || { echo "GET $path with repeated identity headers answered $got" >&2; exit 1; }
+          done
+      - name: Logs
+        if: always()
+        run: docker logs app-ci 2>&1 | tail -50 || true
+
+  publish:
+    needs: [checks, container]
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The tag is the full commit SHA, never "latest": the server repo pins
+      # the digest, and the tag ties that digest back to this commit.
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: type=sha,format=long
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.name.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

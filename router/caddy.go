@@ -91,7 +91,7 @@ func (rt *Router) Caddy(site Site) (string, error) {
 	var b strings.Builder
 	w := func(depth int, s string) { b.WriteString(strings.Repeat("\t", depth) + s + "\n") }
 	w(0, "# Generated from the app's route list by vps-app-kit. Do not edit:")
-	w(0, "# change the routes in the app, then run make caddy.")
+	w(0, "# change the routes in the app, then run make generate.")
 	w(0, "# Keep comments free of braces: the server's route renderer counts them.")
 	w(0, site.Host+" {")
 	for i, m := range matches {

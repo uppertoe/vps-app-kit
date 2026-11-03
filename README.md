@@ -57,6 +57,25 @@ snippet, err := rt.Caddy(router.Site{Name: "myapp", Host: m.SiteHost()})
 
 The template wires all of this up already. Start there rather than here.
 
+## CI for apps
+
+`.github/workflows/app-ci.yml` is the reusable workflow every app runs. An app
+calls it from its own `ci.yml`, pinned to a full commit SHA of this
+repository. It runs the checks below.
+
+| Job | Checks | When |
+|---|---|---|
+| `checks` | Formatting, vet, the tests under the race detector, staticcheck, govulncheck, `kitlint all` and gitleaks | Every push and pull request |
+| `container` | Builds the image, confirms it holds no dev stand-in, runs it locked down, and probes every gated route with forged headers | Every push and pull request |
+| `publish` | Pushes the image tagged with the full commit SHA, with an SBOM and a signed build provenance attestation | Pushes to the default branch only |
+
+`kitlint all` covers the code and templates, the compose file's §5 block,
+`.env.example`, the design-docs contract, the vendored files (downloaded again
+and compared with the registry), migrations already on the base branch, the
+generated Caddy snippet and connections page, the Dockerfile and the
+workflows. A health app that has not recorded its safeguards gets a warning
+on every run, never a failure.
+
 ## Versions
 
 The kit follows semantic versioning. Patch releases fix bugs and merge
