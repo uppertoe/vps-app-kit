@@ -66,11 +66,11 @@ repository. It runs the checks below.
 
 | Job | Checks | When |
 |---|---|---|
-| `checks` | Formatting, vet, the tests under the race detector, staticcheck, govulncheck, `kitlint all` and gitleaks | Every push and pull request |
+| `checks` | Formatting, vet, the tests under the race detector, staticcheck, govulncheck, `kitlint all` (run at the version the workflow names, not the app's chosen kit version) and gitleaks | Every push and pull request |
 | `container` | Builds the image, confirms it holds no dev stand-in, runs it locked down, probes every gated route with forged headers, then runs `kitgate`: every route must admit exactly the people its level names, and refusals must come from the gateway itself | Every push and pull request |
 | `publish` | Pushes the image tagged `main` (which the server pins by digest, and Renovate moves) and `sha-<commit>`, with an SBOM, and a signed build provenance attestation when the repository is public (GitHub does not sign it for private repositories on most plans) | Pushes to the default branch only |
 
-`kitlint all` covers the code and templates, the compose file's §5 block,
+`kitlint all` covers the code and templates, the app's direct dependencies (each declared in `app.yaml`, the kit neither replaced nor older than the workflow's minimum), the compose file's §5 block,
 `.env.example`, the design-docs contract, the vendored files (downloaded again
 and compared with the registry), migrations already on the base branch, the
 generated Caddy snippet and connections page, the Dockerfile, the

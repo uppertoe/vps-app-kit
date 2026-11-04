@@ -15,7 +15,7 @@ func TestBadFixturesAllFlagged(t *testing.T) {
 	for _, f := range fs {
 		count[f.rule]++
 	}
-	want := map[string]int{"egress": 6, "exec": 1, "csp": 6, "htmx": 1, "alpine": 1, "escaping": 2}
+	want := map[string]int{"egress": 12, "exec": 3, "csp": 6, "htmx": 1, "alpine": 1, "escaping": 2}
 	for rule, n := range want {
 		if count[rule] != n {
 			t.Errorf("rule %s: %d findings, want %d (all: %v)", rule, count[rule], n, fs)

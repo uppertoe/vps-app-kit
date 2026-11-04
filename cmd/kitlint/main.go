@@ -53,12 +53,13 @@ func main() {
 		fl := flag.NewFlagSet("all", flag.ExitOnError)
 		base := fl.String("base", "", "git ref the migrations are compared with, such as origin/main")
 		upstream := fl.Bool("upstream", false, "download each vendored file again and compare it with the registry")
+		minKit := fl.String("min-kit", "", "the oldest vps-app-kit version the app may require, such as v0.7.0")
 		_ = fl.Parse(args[1:])
 		root := "."
 		if fl.NArg() > 0 {
 			root = fl.Arg(0)
 		}
-		findings, warnings, err = lintAll(root, options{base: *base, upstream: *upstream})
+		findings, warnings, err = lintAll(root, options{base: *base, upstream: *upstream, minKit: *minKit})
 	} else {
 		root := "."
 		if len(args) > 0 {
@@ -161,8 +162,16 @@ func lintGo(path, rel string) ([]finding, error) {
 		out = append(out, finding{pos.String(), rule, msg})
 	}
 	for _, imp := range f.Imports {
-		if p, _ := strconv.Unquote(imp.Path.Value); p == "os/exec" {
+		p, _ := strconv.Unquote(imp.Path.Value)
+		switch p {
+		case "os/exec":
 			add(imp, "exec", "an app must not run other programs")
+		case "plugin":
+			add(imp, "exec", "an app must not load code at run time")
+		case "net/smtp":
+			add(imp, "egress", "net/smtp sends mail outside the kit; use the mail package (s.mail)")
+		case "net/rpc", "net/rpc/jsonrpc":
+			add(imp, "egress", p+" opens connections outside the egress client")
 		}
 	}
 	pkgOf := func(e ast.Expr) (string, string, bool) {
@@ -176,6 +185,11 @@ func lintGo(path, rel string) ([]finding, error) {
 		}
 		p, ok := names[id.Name]
 		return p, sel.Sel.Name, ok
+	}
+	// isHTTP reports whether e names net/http's type called name.
+	isHTTP := func(e ast.Expr, name string) bool {
+		p, n, ok := pkgOf(e)
+		return ok && p == "net/http" && n == name
 	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch x := n.(type) {
@@ -195,11 +209,33 @@ func lintGo(path, rel string) ([]finding, error) {
 				add(x, "escaping", "template."+name+" marks text as safe and skips escaping; pass the plain string to the template")
 			case p == "crypto/tls" && strings.HasPrefix(name, "Dial"):
 				add(x, "egress", "tls."+name+" opens a connection outside the egress client")
+			case p == "net/http" && name == "Transport":
+				add(x, "egress", "an http.Transport makes connections outside the egress client; use egress.New")
+			case p == "net/http/httputil" && (name == "ReverseProxy" || name == "NewSingleHostReverseProxy"):
+				add(x, "egress", "httputil."+name+" forwards requests outside the egress client")
+			case p == "os" && name == "StartProcess":
+				add(x, "exec", "an app must not run other programs")
+			case p == "syscall" && (name == "Exec" || name == "ForkExec" || name == "StartProcess"):
+				add(x, "exec", "an app must not run other programs")
 			}
 		case *ast.CompositeLit:
-			p, name, ok := pkgOf(x.Type)
-			if ok && p == "net/http" && (name == "Client" || name == "Transport") {
-				add(x, "egress", "an http."+name+" literal bypasses the egress allowlist; use egress.New")
+			if isHTTP(x.Type, "Client") {
+				add(x, "egress", "an http.Client literal bypasses the egress allowlist; use egress.New")
+			}
+		case *ast.CallExpr:
+			// new(http.Client) makes a client as surely as a literal does.
+			if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "new" && len(x.Args) == 1 && isHTTP(x.Args[0], "Client") {
+				add(x, "egress", "new(http.Client) bypasses the egress allowlist; use egress.New")
+			}
+		case *ast.ValueSpec:
+			// var c http.Client declares a usable client; a pointer is fine,
+			// because it must still be given one, from egress.New.
+			if x.Type != nil && isHTTP(x.Type, "Client") {
+				add(x, "egress", "a variable of type http.Client is a client outside the egress allowlist; hold the *http.Client from egress.New")
+			}
+		case *ast.Field:
+			if isHTTP(x.Type, "Client") {
+				add(x, "egress", "a field of type http.Client is a client outside the egress allowlist; hold the *http.Client from egress.New")
 			}
 		}
 		return true

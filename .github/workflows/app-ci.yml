@@ -20,6 +20,12 @@ on:
 permissions: {}
 
 env:
+  # The checks run at this version, named here, never at the version the
+  # app's go.mod names: an app pins this workflow by commit, so it cannot
+  # choose a weaker or forked checker. Raise both with each kit release.
+  KIT_TOOLS: v0.7.0
+  # The oldest vps-app-kit an app may build with.
+  MIN_KIT: v0.7.0
   STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.2
   GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.9.0
   GITLEAKS: zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
@@ -52,8 +58,7 @@ jobs:
         env:
           BASE: ${{ github.base_ref || github.event.repository.default_branch }}
         run: |
-          kit="$(go list -m -f '{{.Version}}' github.com/uppertoe/vps-app-kit)"
-          go run "github.com/uppertoe/vps-app-kit/cmd/kitlint@${kit}" all -upstream -base "origin/${BASE}" .
+          go run "github.com/uppertoe/vps-app-kit/cmd/kitlint@${KIT_TOOLS}" all -upstream -min-kit "$MIN_KIT" -base "origin/${BASE}" .
       - name: Secrets in the history (gitleaks)
         run: docker run --rm -v "$PWD:/repo:ro" "$GITLEAKS" detect --source /repo --no-banner --redact
 
@@ -106,8 +111,7 @@ jobs:
       # exactly the people its access level names.
       - name: Access rules through the real gateway (kitgate)
         run: |
-          kit="$(go list -m -f '{{.Version}}' github.com/uppertoe/vps-app-kit)"
-          go run "github.com/uppertoe/vps-app-kit/cmd/kitgate@${kit}" -image app:ci
+          go run "github.com/uppertoe/vps-app-kit/cmd/kitgate@${KIT_TOOLS}" -image app:ci
 
   publish:
     needs: [checks, container]

@@ -15,3 +15,10 @@ func f(ctx context.Context, c *http.Client) error {
 }
 
 func h(w http.ResponseWriter, r *http.Request) { http.Error(w, "x", http.StatusTeapot) }
+
+// A *http.Client handed over from egress.New is the intended pattern.
+type server struct {
+	http *http.Client
+}
+
+func use(s server) *http.Client { return s.http }
