@@ -42,9 +42,12 @@ import (
 const (
 	defaultGatewayImage = "ghcr.io/uppertoe/vps-scaffold-auth:latest@sha256:d2dd0bea3ad0bbae8243d30ea7fbb85a29aca669f690c9bbb9bad7e4a01d94a7"
 	defaultGatewayRef   = "e4390c3f9affd51f1c9a608ea17fb6409c9f6bf2"
-	defaultCaddyImage   = "caddy:2.11.7-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5"
-	domain              = "e2e.test"
-	project             = "kitgate"
+	// The scaffold commit whose route renderer must accept the app's snippet,
+	// as the server repo's render will. Keep it at vps-base-template's main.
+	defaultScaffoldRef = "f7c9dea7dad7b397a7263071754489439efedf90"
+	defaultCaddyImage  = "caddy:2.11.7-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5"
+	domain             = "e2e.test"
+	project            = "kitgate"
 )
 
 var (
@@ -52,6 +55,7 @@ var (
 	gatewayImage = flag.String("gateway-image", defaultGatewayImage, "the gateway image")
 	gatewayRef   = flag.String("gateway-ref", defaultGatewayRef, "the gateway commit whose deploy/auth.caddy is used")
 	caddyImage   = flag.String("caddy-image", defaultCaddyImage, "the Caddy image")
+	scaffoldRef  = flag.String("scaffold-ref", defaultScaffoldRef, "the vps-base-template commit whose route renderer is used")
 	port         = flag.Int("port", 18443, "local port for Caddy")
 	keep         = flag.Bool("keep", false, "leave the stack running")
 )
@@ -316,6 +320,8 @@ func (t *tester) run() error {
 		t.people = append(t.people, &person{name: "guest", email: "stranger@guests.example", role: "guest"})
 	}
 
+	t.checkRender(snippet, service)
+
 	if err := t.writeStack(snippet, service, sorted(allowed), sorted(groups), hasOpen); err != nil {
 		return err
 	}
@@ -364,6 +370,48 @@ func (t *tester) testMembers() {
 	out, err := read("kitgate_undeclared")
 	t.check(err != nil && strings.Contains(out, "may not read"),
 		"reading a group the app has not declared must be refused, got: %v\n%s", err, out)
+}
+
+// checkRender runs the server's route renderer over the app's snippet, as
+// the server repo will when the app is added, with the gateway's guard
+// snippets beside it. A snippet the renderer refuses could not be deployed.
+func (t *tester) checkRender(snippet, service string) {
+	fmt.Println("kitgate: rendering the snippet with the scaffold's route renderer")
+	dir, err := os.MkdirTemp("", "kitgate-render-")
+	if err != nil {
+		t.failf("render check: %v", err)
+		return
+	}
+	defer os.RemoveAll(dir)
+	renderer, err := fetch("https://raw.githubusercontent.com/uppertoe/vps-base-template/" + *scaffoldRef + "/docker/render-caddy-routes.sh")
+	if err != nil {
+		t.failf("render check: fetching the renderer: %v", err)
+		return
+	}
+	// The auth app is present, as on a server, so an app that reads group
+	// members can be rendered; its own snippet is not under test here.
+	authCaddy := "# scaffold-lint: public -- the sign-in service\nauth.{$DOMAIN} {\n\treverse_proxy auth:8080 {\n\t\timport strip_public\n\t}\n}\n"
+	files := map[string]string{
+		"render.sh":                                  renderer,
+		"docker-compose.yml":                         "include:\n  - apps/auth/docker-compose.yml\n  - apps/" + service + "/docker-compose.yml\n",
+		"apps/auth/docker-compose.yml":               "services:\n  auth:\n    image: example/auth\n",
+		"apps/auth/auth.caddy":                       authCaddy,
+		"apps/" + service + "/docker-compose.yml":    "services:\n  " + service + ":\n    image: example/app\n",
+		"apps/" + service + "/" + service + ".caddy": snippet,
+	}
+	for name, body := range files {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.failf("render check: %v", err)
+			return
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.failf("render check: %v", err)
+			return
+		}
+	}
+	out, err := exec.Command("bash", filepath.Join(dir, "render.sh"), dir, filepath.Join(dir, "out")).CombinedOutput()
+	t.check(err == nil, "the server's route renderer refuses the app's snippet:\n%s", out)
 }
 
 func sorted(m map[string]bool) []string {

@@ -225,7 +225,8 @@ func TestCaddySnippet(t *testing.T) {
 		"import protected_open fellows:8080",
 		"import protected fellows:8080",
 		"import strip_public",
-		"# scaffold-lint: public -- landing page",
+		"# scaffold-lint: open-path -- /: landing page",
+		"# scaffold-lint: open-path -- /hooks/github: a signed webhook from repository pushes",
 		"max_size 262144",
 		"respond 404",
 	} {
@@ -347,4 +348,19 @@ func TestPublicOriginMustBeExact(t *testing.T) {
 		}()
 	}
 	New(Options{PublicOrigin: "https://app.example.org/"})
+}
+
+func TestAllPublicSiteCarriesPublicMarker(t *testing.T) {
+	rt := New(Options{PublicOrigin: origin})
+	rt.HandleFunc("GET /{$}", access.Public("the landing page"), func(http.ResponseWriter, *http.Request) {})
+	out, err := rt.Caddy(Site{Name: "x", Host: "x.{$DOMAIN}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "# scaffold-lint: public -- container health check; the landing page\nx.{$DOMAIN} {") {
+		t.Fatalf("no site-level public marker:\n%s", out)
+	}
+	if strings.Contains(out, "open-path") {
+		t.Fatal("an all-public site needs no open-path markers")
+	}
 }

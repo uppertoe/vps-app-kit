@@ -189,14 +189,12 @@ func (l Level) CaddyLines(upstream string, maxWebhookBytes int64) []string {
 	switch l.k {
 	case kindPublic:
 		return []string{
-			"# scaffold-lint: public -- " + l.reason,
 			"reverse_proxy " + upstream + " {",
 			"\timport strip_public",
 			"}",
 		}
 	case kindWebhook:
 		return []string{
-			"# scaffold-lint: public -- webhook: " + l.reason,
 			"request_body {",
 			fmt.Sprintf("\tmax_size %d", maxWebhookBytes),
 			"}",
