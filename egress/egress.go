@@ -2,10 +2,15 @@
 // services. It reaches only the hosts the app's manifest declares.
 //
 // The server's container firewall is the boundary actually enforced: it
-// allows outbound traffic only to a short list of ports. This client is a
-// guard on the calls made through it, and the manifest is the reviewed
-// record of which services the app talks to. CI fails on any other HTTP
-// client in an app's code, so the two stay the same list.
+// allows outbound traffic only to a short list of ports, not to named hosts.
+// This client is a guard on the calls made through it, and the manifest is
+// the reviewed record of which services the app talks to. kitlint fails on
+// the usual ways app code makes another client or connection (http.Get and
+// its siblings, the default client and transport, http.Client values and
+// literals, new(http.Client), http.Transport, net and tls dials, httputil
+// proxies, net/smtp), and every third-party library must be declared in
+// app.yaml, so a library that brings its own client is seen in review. It
+// is a check on ordinary code, not a sandbox: code written to evade it can.
 package egress
 
 import (

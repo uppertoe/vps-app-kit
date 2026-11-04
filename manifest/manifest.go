@@ -56,6 +56,17 @@ type Manifest struct {
 	// server's route renderer gives the app a private network to the
 	// gateway's members endpoint only when this list is not empty.
 	Members []string `yaml:"members"`
+	// Libraries lists every third-party Go module the app requires
+	// directly, other than vps-app-kit, with what it is for. kitlint all
+	// fails on an undeclared one, so a library that brings its own network
+	// client or runs programs is seen in review.
+	Libraries []Library `yaml:"libraries"`
+}
+
+// Library is one direct third-party dependency.
+type Library struct {
+	Module  string `yaml:"module"`
+	Purpose string `yaml:"purpose"`
 }
 
 // Outbound is one outside HTTPS service.
@@ -165,6 +176,13 @@ func (m *Manifest) validate() error {
 		text(fmt.Sprintf("webhooks[%d].from", i), w.From)
 		text(fmt.Sprintf("webhooks[%d].purpose", i), w.Purpose)
 	}
+	modRe := regexp.MustCompile(`^[a-z0-9.-]+\.[a-z]{2,}(/[A-Za-z0-9._~-]+)+$`)
+	for i, l := range m.Libraries {
+		if !modRe.MatchString(l.Module) {
+			bad("libraries[%d].module %q must be a Go module path", i, l.Module)
+		}
+		text(fmt.Sprintf("libraries[%d].purpose", i), l.Purpose)
+	}
 	groupRe := regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 	seenGroup := map[string]bool{}
 	for i, g := range m.Members {
@@ -234,6 +252,16 @@ func (m *Manifest) ConnectionsPage() string {
 		w("")
 		w("The app reads the members of these groups from the sign-in service, inside the server, when it needs them: " +
 			"`" + strings.Join(m.Members, "`, `") + "`. It keeps no copy of the members.")
+	}
+	if len(m.Libraries) > 0 {
+		w("")
+		w("The app is built with these third-party libraries, besides the platform's own kit:")
+		w("")
+		w("| Library | What it is for |")
+		w("|---|---|")
+		for _, l := range m.Libraries {
+			w("| `" + cell(l.Module) + "` | " + cell(l.Purpose) + " |")
+		}
 	}
 	w("")
 	w("## What leaves the server")
