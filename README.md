@@ -67,7 +67,7 @@ repository. It runs the checks below.
 | Job | Checks | When |
 |---|---|---|
 | `checks` | Formatting, vet, the tests under the race detector, staticcheck, govulncheck, `kitlint all` (run at the version the workflow names, not the app's chosen kit version) and gitleaks | Every push and pull request |
-| `container` | Builds the image, confirms it holds no dev stand-in, runs it locked down, probes every gated route with forged headers, then runs `kitgate`: every route must admit exactly the people its level names, and refusals must come from the gateway itself | Every push and pull request |
+| `container` | Builds the image, confirms it holds no dev stand-in, runs it locked down, probes every gated route with forged headers, then runs `kitgate` (at the same version the workflow names): every route must admit exactly the people its level names, and refusals must come from the gateway itself | Every push and pull request |
 | `publish` | Pushes the image tagged `main` (which the server pins by digest, and Renovate moves) and `sha-<commit>`, with an SBOM, and a signed build provenance attestation when the repository is public (GitHub does not sign it for private repositories on most plans) | Pushes to the default branch only |
 
 `kitlint all` covers the code and templates, the app's direct dependencies (each declared in `app.yaml`, the kit neither replaced nor older than the workflow's minimum), the compose file's §5 block,
@@ -77,6 +77,17 @@ generated Caddy snippet and connections page, the Dockerfile, the
 workflows, and, for an app holding personal or health information, a privacy
 page in the design docs and a public `/privacy` route. A health app that has not recorded its safeguards gets a warning
 on every run, never a failure.
+
+The workflow, not the app, decides which checker runs. Its `env` block names
+two versions: `KIT_TOOLS` is the release of `kitlint` and `kitgate` that every
+step runs (`go run github.com/uppertoe/vps-app-kit/cmd/kitlint@v0.7.0`), and
+`MIN_KIT` is the oldest kit an app's `go.mod` may require. An app that pins an
+older kit fails the `checks` job with
+`go.mod:8: error: gomod: vps-app-kit v0.6.0 is older than v0.7.0, the oldest
+this CI accepts; update it`, so the app is linted by the current rules and
+built with a kit that satisfies them. Both values are raised with each release,
+and the kit's own tests refuse a malformed value or a minimum newer than the
+tools that enforce it.
 
 ## Versions
 
