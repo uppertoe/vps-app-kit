@@ -85,9 +85,10 @@ step runs (`go run github.com/uppertoe/vps-app-kit/cmd/kitlint@v0.7.0`), and
 older kit fails the `checks` job with
 `go.mod:8: error: gomod: vps-app-kit v0.6.0 is older than v0.7.0, the oldest
 this CI accepts; update it`, so the app is linted by the current rules and
-built with a kit that satisfies them. Both values are raised with each release,
-and the kit's own tests refuse a malformed value or a minimum newer than the
-tools that enforce it.
+built with a kit that satisfies them. `KIT_TOOLS` is raised with each release,
+and `MIN_KIT` whenever a release is one every app must have. The kit's own
+tests refuse a malformed value or a minimum newer than the tools that enforce
+it, and the release guard below refuses a tag that does not match.
 
 ## Versions
 
@@ -95,5 +96,40 @@ The kit follows semantic versioning. Patch releases fix bugs and merge
 automatically in apps. Minor and major releases are merged by a person. A
 release that changes a security default says so in its notes, under the
 heading "Security defaults".
+
+### Cutting a release
+
+A release is a `vX.Y.Z` tag on `main`, with its notes published as a GitHub
+release of the same name. Four steps fall to the person releasing.
+
+1. In `.github/workflows/app-ci.yml`, set `KIT_TOOLS` to the version about to
+   be tagged, so every app's CI runs the `kitlint` and `kitgate` of that
+   release. Raise `MIN_KIT` to the same version only when every app must move
+   to this release before its CI may pass again, for instance when the release
+   changes a security default; otherwise leave it at the oldest kit that is
+   still acceptable. `MIN_KIT` may lag `KIT_TOOLS` but never lead it. Merge
+   that change to `main` through a pull request as usual; the kit's tests check
+   both values are well formed.
+2. Run the guard against the tag you intend, before pushing it:
+   `.github/scripts/release-guard.sh vX.Y.Z`. It passes when the tag equals
+   `KIT_TOOLS` and `MIN_KIT` is a release no newer than the tag, and otherwise
+   says which value to change.
+3. Tag the merged commit and publish the release, for example
+   `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`, then
+   `gh release create vX.Y.Z --title vX.Y.Z --notes-file notes.md`.
+4. The `Release guard` workflow runs the same script on the tag push. A red
+   run on the tag means the release was cut with a `KIT_TOOLS` that does not
+   match it, so apps pinning the workflow at that commit would run an older
+   checker than the kit they build with. Correct the workflow on `main` and
+   cut the next patch version. Never move or reuse the tag: the Go module
+   proxy and checksum database keep the content a version first had, and a
+   changed tag fails every `go get` of it.
+
+`MIN_KIT` may lag because it is a floor, not a pointer to the current release.
+Apps take kit patch releases automatically but a person merges each minor or
+major release and each move of the workflow pin, so a minimum that always
+equalled the newest tag would turn every workflow pin bump red until the
+matching `go.mod` bump was merged, with no gain in safety: `KIT_TOOLS` already
+fixes which checker runs.
 
 Report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes.
