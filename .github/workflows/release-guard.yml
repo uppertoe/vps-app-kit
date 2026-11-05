@@ -1,0 +1,23 @@
+# Runs on every release tag. The release fails unless the tag is the version
+# app-ci.yml runs kitlint and kitgate at (KIT_TOOLS), and the oldest kit an
+# app may require (MIN_KIT) is a release no newer than the tag. The same script
+# runs locally before the tag is pushed: .github/scripts/release-guard.sh vX.Y.Z
+name: Release guard
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag is the version the app workflow runs
+        run: bash .github/scripts/release-guard.sh "$GITHUB_REF_NAME" .github/workflows/app-ci.yml
